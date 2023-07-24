@@ -93,7 +93,7 @@ QC <- inst_meta %>%
   dplyr::filter(pert_type %in% c("ctl_vehicle", "trt_poscon")) %>%
   dplyr::inner_join(LMFI.long) %>%
   dplyr::inner_join(analyte_meta) %>% 
-  dplyr::group_by(compound_plate, prism_replicate, culture, analyte_id, ccle_name) %>%
+  dplyr::group_by(compound_plate, prism_replicate, culture, analyte_id, ccle_name, screen) %>%
   dplyr::filter(is.finite(LMFI.normalized)) %>% 
   dplyr::summarise(
     error_rate =  min(PRROC::roc.curve(scores.class0 = LMFI.normalized,
@@ -116,7 +116,7 @@ QC <- inst_meta %>%
 
 
 QC %>% 
-  write_csv("data/PRISM Oncology Reference - QC Table.csv")
+  write_csv("data/PRISM Oncology Reference 23Q2 - QC Table.csv")
 
 
 
@@ -126,10 +126,9 @@ QC %>%
 # ----
 
 LFC<- LMFI.long %>%  
-  dplyr::left_join(QC %>% dplyr::select(analyte_id, prism_replicate, NC.median, PASS)) %>%
+  dplyr::left_join(QC %>% dplyr::select(analyte_id, prism_replicate, NC.median, PASS, n.PASS)) %>%
   dplyr::mutate(LFC = LMFI.normalized - NC.median) %>%
-  dplyr::select(profile_id, prism_replicate, analyte_id, LFC, PASS, screen, compound_plate,culture) 
-
+  dplyr::select(profile_id, prism_replicate, analyte_id, LFC, PASS, n.PASS, screen, compound_plate,culture) 
 
 # -----
 # APPLY COMBAT FOR THE POOL EFFECTS 
@@ -172,7 +171,7 @@ apply_combat <- function(Y) {
 LFC %<>% 
   dplyr::left_join(analyte_meta %>% 
                      dplyr::distinct(pool_id, analyte_id, culture, compound_plate, screen)) %>% 
-  dplyr::select(analyte_id, pool_id, culture, screen, profile_id, LFC, PASS) %>%
+  dplyr::select(analyte_id, pool_id, culture, screen, profile_id, LFC, PASS, n.PASS) %>%
   dplyr::left_join(inst_meta %>% 
                      dplyr::distinct(profile_id, compound_plate, screen, pert_type, broad_id, pert_dose)) %>%
   dplyr::filter(is.finite(LFC), pool_id != "CTLBC", !is.na(pool_id), pert_type == "trt_cp") %>% 
@@ -180,12 +179,18 @@ LFC %<>%
                broad_id, pert_dose, compound_plate, sep = "::", remove = F) %>% 
   split(.$condition) %>% 
   purrr::map_dfr(~dplyr::mutate(.x, LFC_cb = apply_combat(.))) %>%
-  dplyr::select(profile_id, analyte_id, LFC, LFC_cb, PASS, screen, compound_plate, culture) 
+  dplyr::select(profile_id, analyte_id, LFC, LFC_cb, PASS, n.PASS, screen, compound_plate, culture) 
 
 
 LFC %>% 
   write_csv("data/PRISM Oncology Reference - LFC.csv")
   
+
+LFC <- data.table::fread("~/Downloads/ONC-REF-001/release/Download/Download 2/PRISM Oncology Reference - LFC.csv")
+analyte_meta <- data.table::fread("~/Downloads/ONC-REF-001/release/Download/Download 2/PRISM Oncology Reference - Analyte Meta.csv")
+inst_meta <- data.table::fread("~/Downloads/ONC-REF-001/release/Download/Download 2/PRISM Oncology Reference - Inst Meta.csv")
+
+
 
 # -----
 # COLLAPSE THE REPLICATES
@@ -195,11 +200,11 @@ LFC.Matrix <- LFC %>%
   dplyr::left_join(analyte_meta) %>%
   dplyr::left_join(inst_meta) %>%
   dplyr::mutate(col_name = paste0(broad_id, "::", pert_dose, "::", compound_plate, "::", screen)) %>% 
-  dplyr::filter(PASS, !is.na(depmap_id), is.finite(LFC_cb)) %>%  
+  dplyr::filter(PASS, n.PASS > 1 ,!is.na(depmap_id), is.finite(LFC_cb)) %>%  
   reshape2::acast(depmap_id ~ col_name, value.var = "LFC_cb", fun.aggregate = median)
   
 LFC.Matrix %>%
-  write.csv("data/PRISM Oncology Reference - LFC Matrix.csv")
+  write.csv("data/PRISM Oncology Reference 23Q2 - LFC Matrix.csv")
 
 
 # ----
@@ -398,7 +403,7 @@ fit_4param_drc <- function(LFC_filtered, dose_var = "pert_dose",  var_data,
 
 DRC <-  LFC %>% 
   dplyr::left_join(inst_meta) %>%
-  dplyr::filter(PASS, is.finite(LFC_cb)) %>% 
+  dplyr::filter(PASS, n.PASS > 1, is.finite(LFC_cb)) %>% 
   dplyr::group_by(broad_id, compound_plate, analyte_id, culture, screen) %>% 
   dplyr::summarise(get_best_fit(2^LFC_cb, pert_dose)) %>%
   dplyr::ungroup() 
@@ -417,9 +422,100 @@ DRC <- inst_meta %>%
 
 
 DRC %>% 
-  write_csv("data/PRISM Oncology Reference - Dose Response Parameters.csv")
+  write_csv("data/PRISM Oncology Reference 23Q2 - Dose Response Parameters.csv")
 
 
+# ----
+# PORTAL FILES 
+# ----
+# These files are produced to be consumed by the portal
+
+
+M <- LFC %>% 
+  dplyr::left_join(analyte_meta) %>%
+  dplyr::left_join(inst_meta) %>% 
+  dplyr::filter(PASS, n.PASS > 1, pert_type == "trt_cp", is.finite(LFC_cb)) %>%
+  reshape2::acast(profile_id ~ depmap_id, value.var = "LFC_cb",
+                  fun.aggregate = median)
+
+
+Model.annotations <- tibble(cell_line_name = colnames(M),
+                            index = 0:(dim(M)[2]-1)) 
+
+
+Condition.annotations <- tibble(profile_id = rownames(M),
+                                index = 0:(dim(M)[1]-1)) %>%
+  dplyr::left_join(inst_meta) %>% 
+  dplyr::distinct(index, broad_id, pert_dose, prism_replicate, compound_plate) %>%
+  #dplyr::left_join(compound_list, by = c("pert_mfc_id" = "IDs")) %>%
+  dplyr::rename(compound_name = broad_id,
+                dose = pert_dose) %>%
+  dplyr::mutate(masked = "F") %>%
+  dplyr::group_by(compound_plate, compound_name, dose) %>% 
+  dplyr::arrange(prism_replicate) %>% dplyr::mutate(replicate = 1:n()) %>% 
+  dplyr::ungroup() %>% dplyr::select(-compound_plate, -prism_replicate) %>% 
+  dplyr::distinct() %>% 
+  dplyr::mutate(compound_name = paste0("BRD:", compound_name))
+
+colnames(M) <- Model.annotations$index
+rownames(M) <- Condition.annotations$index
+
+
+Response.curves <- DRC %>% 
+  dplyr::left_join(analyte_meta) %>% 
+  dplyr::rename(cell_line_name = depmap_id,
+                compound_name = broad_id,
+                ec50 = Inflection,
+                lower_asymptote = Lower_Limit,
+                upper_asymptote = Upper_Limit,
+                slope = Slope) %>% 
+  dplyr::group_by(cell_line_name, compound_name) %>%
+  dplyr::top_n(1, frac_var_explained) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::select(cell_line_name, compound_name, ec50, lower_asymptote, upper_asymptote, slope) %>%
+  dplyr::mutate(compound_name = paste0("BRD:", compound_name))
+
+
+AUC = DRC %>% 
+  dplyr::left_join(analyte_meta) %>% 
+  dplyr::mutate(compound_name = paste0("BRD:", broad_id)) %>% 
+  dplyr::filter(is.finite(AUC)) %>% 
+  reshape2::acast(compound_name ~ depmap_id, value.var = "AUC", fun.aggregate = median)
+
+IC50 = DRC %>% 
+  dplyr::left_join(analyte_meta) %>% 
+  dplyr::mutate(compound_name = paste0("BRD:", broad_id)) %>% 
+  dplyr::filter(is.finite(log2.IC50)) %>% 
+  dplyr::mutate(IC50 = 2^log2.IC50) %>% 
+  reshape2::acast(compound_name ~ depmap_id, value.var = "IC50", fun.aggregate = median)
+
+
+Compound_List %>%
+  tidyr::separate_rows(broad_id, sep = ";") %>% 
+  dplyr::mutate(broad_id = paste0("BRD:", broad_id)) %>% 
+  dplyr::group_by(Drug.Name, MOA, Synonyms, Target, screen) %>% 
+  dplyr::summarise(IDs = paste0(broad_id, collapse = ";")) %>% 
+  dplyr::rename(repurposing_target = Target) %>%
+  write_csv("portal_files/compound_list.csv")
+
+(2^M) %>% 
+  write.csv("portal_files/Viability_matrix.csv")
+
+Condition.annotations %>% 
+  write_csv("portal_files/Condition_annotations.csv")
+
+Model.annotations %>%  
+  write_csv("portal_files/Model_annotations.csv")
+
+Response.curves %>% 
+  dplyr::distinct() %>% 
+  write_csv("portal_files/Response_curves.csv")
+
+AUC %>% 
+  write.csv("portal_files/AUC_matrix.csv")
+
+IC50 %>% 
+  write.csv("portal_files/IC50_matrix.csv")
 
 
 
