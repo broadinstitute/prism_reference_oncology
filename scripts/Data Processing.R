@@ -13,9 +13,9 @@ library(drc)
 # LOAD THE RAW DATA
 #----
 
-analyte_meta = data.table::fread("data/PRISM Oncology Reference - Analyte Meta.csv")
-inst_meta <- data.table::fread("data/PRISM Oncology Reference - Inst Meta.csv")
-LMFI.long <- data.table::fread("data/PRISM Oncology Reference - LMFI.csv") 
+analyte_meta = data.table::fread("data/PRISM Oncology Reference 23Q2 - Analyte Meta.csv")
+inst_meta <- data.table::fread("data/PRISM Oncology Reference 23Q2 - Inst Meta.csv")
+LMFI.long <- data.table::fread("data/PRISM Oncology Reference 23Q2 - LMFI.csv") 
 
 
 # ----
@@ -134,8 +134,6 @@ LFC<- LMFI.long %>%
 # APPLY COMBAT FOR THE POOL EFFECTS 
 # -----
 
-
-
 apply_combat <- function(Y) {
   # create "condition" column to be used as "batches"
   df <- Y %>%
@@ -184,13 +182,6 @@ LFC %<>%
 
 LFC %>% 
   write_csv("data/PRISM Oncology Reference - LFC.csv")
-  
-
-LFC <- data.table::fread("~/Downloads/ONC-REF-001/release/Download/Download 2/PRISM Oncology Reference - LFC.csv")
-analyte_meta <- data.table::fread("~/Downloads/ONC-REF-001/release/Download/Download 2/PRISM Oncology Reference - Analyte Meta.csv")
-inst_meta <- data.table::fread("~/Downloads/ONC-REF-001/release/Download/Download 2/PRISM Oncology Reference - Inst Meta.csv")
-
-
 
 # -----
 # COLLAPSE THE REPLICATES
@@ -291,7 +282,6 @@ fit_4param_drc <- function(LFC_filtered, dose_var = "pert_dose",  var_data,
                               -as.numeric(drc_model$coefficients [[1]]), as.numeric(drc_model$coefficients [[4]]))
     # "slope" in drc package is -ve of slope in dr4pl package and so -ve sign needs to be put in here.
     
-    # print (mse_df$mse)
     results.df[[ix]] <- tibble( fit_name = "drc_drm", 
                                 Lower_Limit = as.numeric(drc_model$coefficients [[2]]),
                                 Upper_Limit = as.numeric(drc_model$coefficients [[3]]),
@@ -416,13 +406,16 @@ DRC <- inst_meta %>%
   dplyr::left_join(DRC) %>% 
   dplyr::filter(successful_fit) %>% 
   dplyr::rowwise() %>% 
-  dplyr::mutate(AUC = compute_auc(Lower_Limit, Upper_Limit, Inflection, Slope, md, MD),
-                log2.IC50 = compute_log_ic50(Lower_Limit, Upper_Limit, Inflection, Slope, md, MD)) %>%
+  dplyr::mutate(AUC = compute_auc(Lower_Limit, Upper_Limit, Inflection, -Slope, md, MD),
+                log2.IC50 = compute_log_ic50(Lower_Limit, Upper_Limit, Inflection, -Slope, md, MD)) %>%
   dplyr::select(-successful_fit)
 
 
 DRC %>% 
   write_csv("data/PRISM Oncology Reference 23Q2 - Dose Response Parameters.csv")
+
+
+
 
 
 # ----
